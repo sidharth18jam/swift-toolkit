@@ -158,9 +158,55 @@ final class EditingActionsController {
         // Expansion setting which allows to copy the selection.
         // To reproduce, comment out and select Japanese text on a PDF.
         builder.remove(menu: .learn)
+
+        if #available(iOS 16.0, *) {
+            insertCustomActions(with: builder)
+        }
+    }
+
+    /// Inserts the custom editing actions right after the standard edit menu
+    /// (Copy), preserving the order in which the app declared them. Without
+    /// this, custom actions bridged through the deprecated `UIMenuController`
+    /// land at the very end of the edit menu, after Look Up/Translate/Share.
+    @available(iOS 16.0, *)
+    private func insertCustomActions(with builder: UIMenuBuilder) {
+        // The main menu system builds the iPad/Catalyst menu bar; selection
+        // actions only belong in the edit menu.
+        guard builder.system != .main else {
+            return
+        }
+
+        let commands = actions
+            .compactMap(\.menuItem)
+            .map { UICommand(title: $0.title, action: $0.action) }
+
+        guard !commands.isEmpty else {
+            return
+        }
+
+        let menu = UIMenu(
+            identifier: UIMenu.Identifier("org.readium.customEditingActions"),
+            options: .displayInline,
+            children: commands
+        )
+
+        if builder.menu(for: .standardEdit) != nil {
+            builder.insertSibling(menu, afterMenu: .standardEdit)
+        } else if builder.menu(for: .lookup) != nil {
+            builder.insertSibling(menu, beforeMenu: .lookup)
+        } else {
+            builder.insertChild(menu, atStartOfMenu: .root)
+        }
     }
 
     func updateSharedMenuController() {
+        if #available(iOS 16.0, *) {
+            // Custom actions are inserted through `buildMenu(with:)`;
+            // publishing them through the deprecated `UIMenuController` as
+            // well would duplicate them in the edit menu.
+            return
+        }
+
         var items: [UIMenuItem] = []
         if isEnabled, let selection = selection {
             items = actions
