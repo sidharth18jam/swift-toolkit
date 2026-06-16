@@ -160,16 +160,28 @@ final class EditingActionsController {
         builder.remove(menu: .learn)
 
         if #available(iOS 16.0, *) {
-            insertCustomActions(with: builder)
+            // When Copy is enabled, remove the system Copy menu (`.standardEdit`)
+            // so it no longer pins Copy to the front of the selection menu. This
+            // lets the native Look Up lead; Copy is re-added as a trailing inline
+            // command in `insertCustomActions`, keeping it available in the
+            // overflow. `.standardEdit` also carries Cut/Paste/Select, which are
+            // irrelevant for the read-only navigator selection.
+            let demoteCopy = actions.contains(.copy)
+            if demoteCopy {
+                builder.remove(menu: .standardEdit)
+            }
+            insertCustomActions(with: builder, demoteCopy: demoteCopy)
         }
     }
 
-    /// Inserts the custom editing actions right after the standard edit menu
-    /// (Copy), preserving the order in which the app declared them. Without
-    /// this, custom actions bridged through the deprecated `UIMenuController`
-    /// land at the very end of the edit menu, after Look Up/Translate/Share.
+    /// Inserts the custom editing actions right after the native Look Up menu,
+    /// preserving the order in which the app declared them, and (when Copy was
+    /// demoted in `buildMenu`) re-adds Copy as a trailing inline command so it
+    /// stays available in the overflow. Without explicit placement, custom
+    /// actions bridged through the deprecated `UIMenuController` land at the very
+    /// end of the edit menu, after Look Up/Translate/Share.
     @available(iOS 16.0, *)
-    private func insertCustomActions(with builder: UIMenuBuilder) {
+    private func insertCustomActions(with builder: UIMenuBuilder, demoteCopy: Bool) {
         // The main menu system builds the iPad/Catalyst menu bar; selection
         // actions only belong in the edit menu.
         guard builder.system != .main else {
@@ -180,22 +192,62 @@ final class EditingActionsController {
             .compactMap(\.menuItem)
             .map { UICommand(title: $0.title, action: $0.action) }
 
-        guard !commands.isEmpty else {
-            return
+        if !commands.isEmpty {
+            if builder.menu(for: .lookup) != nil {
+                // iOS bundles Look Up, Translate and Search Web into a single
+                // atomic `.lookup` menu, so inserting a sibling after it would
+                // push the custom actions behind all three (into the overflow).
+                // Instead, reorder the group's own children: keep Look Up first,
+                // then the app's custom actions, then Translate / Search Web.
+                // The system-provided elements are reused as-is, so no private
+                // lookup selectors are introduced.
+                builder.replaceChildren(ofMenu: .lookup) { children in
+                    guard !children.isEmpty else { return commands }
+                    let lookupSelectors = EditingAction.lookup.actions
+                    if let index = children.firstIndex(where: {
+                        ($0 as? UICommand).map { lookupSelectors.contains($0.action) } ?? false
+                    }) {
+                        var rest = children
+                        let lookUp = rest.remove(at: index)
+                        return [lookUp] + commands + rest
+                    }
+                    // Fall back to assuming the first item is Look Up.
+                    return [children[0]] + commands + Array(children.dropFirst())
+                }
+            } else {
+                // Look Up isn't available (e.g. disabled): keep the custom
+                // actions as their own inline group near the front.
+                let menu = UIMenu(
+                    identifier: UIMenu.Identifier("org.readium.customEditingActions"),
+                    options: .displayInline,
+                    children: commands
+                )
+                if builder.menu(for: .standardEdit) != nil {
+                    builder.insertSibling(menu, afterMenu: .standardEdit)
+                } else {
+                    builder.insertChild(menu, atStartOfMenu: .root)
+                }
+            }
         }
 
-        let menu = UIMenu(
-            identifier: UIMenu.Identifier("org.readium.customEditingActions"),
-            options: .displayInline,
-            children: commands
-        )
+        // Re-add Copy (removed from the front in `buildMenu`) as the last item.
+        // The `copy:` selector routes to the navigator view's `copy(_:)`
+        // override, so it stays DRM-aware and functional.
+        if demoteCopy {
+            let copyMenu = UIMenu(
+                identifier: UIMenu.Identifier("org.readium.relocatedCopy"),
+                options: .displayInline,
+                children: [UICommand(
+                    title: "Copy",
+                    action: #selector(UIResponderStandardEditActions.copy(_:))
+                )]
+            )
 
-        if builder.menu(for: .standardEdit) != nil {
-            builder.insertSibling(menu, afterMenu: .standardEdit)
-        } else if builder.menu(for: .lookup) != nil {
-            builder.insertSibling(menu, beforeMenu: .lookup)
-        } else {
-            builder.insertChild(menu, atStartOfMenu: .root)
+            if builder.menu(for: .share) != nil {
+                builder.insertSibling(copyMenu, afterMenu: .share)
+            } else {
+                builder.insertChild(copyMenu, atEndOfMenu: .root)
+            }
         }
     }
 
