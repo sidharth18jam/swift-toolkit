@@ -83,7 +83,7 @@ function getCurrentSelectionText() {
   const start = textRange.start.offset;
   const end = textRange.end.offset;
 
-  const snippetLength = 200;
+  const snippetLength = 300;
 
   // Compute the text before the highlight, ignoring the first "word", which might be cut.
   let before = text.slice(Math.max(0, start - snippetLength), start);
